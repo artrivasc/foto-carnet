@@ -1,7 +1,7 @@
-flask==3.1.0
-flask-cors==5.0.1
-anthropic==0.50.0
-Pillow==11.2.1
-gunicorn==23.0.0
-rembg==2.0.73
+flask
+flask-cors
+anthropic
+Pillow
+gunicorn
+rembg
 onnxruntime
