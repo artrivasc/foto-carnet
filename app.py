@@ -4,7 +4,7 @@ import json
 import anthropic
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
-from PIL import Image, ImageFilter, ImageEnhance
+from PIL import Image, ImageFilter, ImageEnhance, ImageDraw
 import io
 import concurrent.futures
 
@@ -19,10 +19,11 @@ OUTPUT_H = 800
 
 
 def analizar_con_claude(img_bytes, media_type):
+    """Single Claude call: get crop box + person outline polygon."""
     b64 = base64.standard_b64encode(img_bytes).decode("utf-8")
     response = client.messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=600,
+        max_tokens=2000,
         messages=[{
             "role": "user",
             "content": [
@@ -32,20 +33,36 @@ def analizar_con_claude(img_bytes, media_type):
                 },
                 {
                     "type": "text",
-                    "text": (
-                        "Analyze this photo for a passport/ID crop.\n"
-                        "Return ONLY valid JSON, no markdown:\n"
-                        '{"faceFound":true,"cropBox":{"xPct":number,"yPct":number,"wPct":number,"hPct":number},"nota":"frase corta en español"}\n\n'
-                        "Rules:\n"
-                        "- xPct/yPct = top-left corner as % of image dimensions (0-100)\n"
-                        "- wPct/hPct = crop width/height as % of image\n"
-                        "- Include full head (never cut hair) + shoulders + upper chest\n"
-                        "- 10% padding above head, 10% on each side\n"
-                        "- Eyes in upper 40% of crop\n"
-                        "- Portrait ratio (~3:4)\n"
-                        "- If face very close already, use 90%+ of the image\n"
-                        'No face: {"faceFound":false,"cropBox":{"xPct":0,"yPct":0,"wPct":100,"hPct":100},"nota":"No se detectó un rostro"}'
-                    )
+                    "text": """Analyze this portrait photo for passport/ID processing.
+Return ONLY valid JSON, no markdown, no explanation:
+
+{
+  "faceFound": true,
+  "cropBox": {
+    "xPct": number,
+    "yPct": number,
+    "wPct": number,
+    "hPct": number
+  },
+  "personOutline": [[x1Pct,y1Pct],[x2Pct,y2Pct],...],
+  "nota": "frase corta en español"
+}
+
+Rules for cropBox (percentages of full image size 0-100):
+- Include full head + shoulders + upper chest
+- 10% padding above head, 10% on each side
+- Eyes in upper 40% of crop area
+- Portrait ratio ~3:4
+
+Rules for personOutline:
+- A polygon that traces the OUTLINE of the person (head + shoulders + body visible)
+- 20 to 40 points as [xPct, yPct] percentages of the FULL image dimensions
+- Trace carefully around hair, ears, neck, shoulders
+- The polygon should separate person from background as accurately as possible
+- Go clockwise starting from top of head
+
+If no face found:
+{"faceFound":false,"cropBox":{"xPct":0,"yPct":0,"wPct":100,"hPct":100},"personOutline":[],"nota":"No se detectó un rostro"}"""
                 }
             ]
         }]
@@ -60,8 +77,37 @@ def hex_to_rgb(hex_color):
     return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
 
+def apply_person_mask(img, outline_pcts, bg_color_rgb):
+    """
+    Use Claude's polygon outline to mask the background.
+    Returns RGB image with background replaced by bg_color.
+    """
+    w, h = img.size
+
+    if not outline_pcts or len(outline_pcts) < 3:
+        # No valid outline — return image as-is
+        return img
+
+    # Convert percentage points to pixel coordinates
+    poly = [(int(p[0] / 100 * w), int(p[1] / 100 * h)) for p in outline_pcts]
+
+    # Create mask: white where person is, black where background is
+    mask = Image.new("L", (w, h), 0)
+    draw = ImageDraw.Draw(mask)
+    draw.polygon(poly, fill=255)
+
+    # Feather the mask edges slightly for smoother look
+    from PIL import ImageFilter as IF
+    mask = mask.filter(IF.GaussianBlur(radius=3))
+
+    # Composite: person over solid background
+    bg = Image.new("RGB", (w, h), bg_color_rgb)
+    result = Image.composite(img, bg, mask)
+    return result
+
+
 def procesar_una_foto(img_bytes, media_type, bg_color):
-    # Step 1: Claude finds face crop
+    # Step 1: Claude analyzes — crop + outline in one call
     analysis = analizar_con_claude(img_bytes, media_type)
 
     if not analysis.get("faceFound"):
@@ -71,11 +117,18 @@ def procesar_una_foto(img_bytes, media_type, bg_color):
             "nota": analysis.get("nota", "")
         }
 
-    # Step 2: Crop to head + shoulders
-    crop = analysis["cropBox"]
+    bg_rgb = hex_to_rgb(bg_color)
+
+    # Step 2: Open image
     img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     w, h = img.size
 
+    # Step 3: Apply person mask to full image first
+    outline = analysis.get("personOutline", [])
+    img_masked = apply_person_mask(img, outline, bg_rgb)
+
+    # Step 4: Crop to head+shoulders area
+    crop = analysis["cropBox"]
     x = max(0, int((crop["xPct"] / 100) * w))
     y = max(0, int((crop["yPct"] / 100) * h))
     cw = min(int((crop["wPct"] / 100) * w), w - x)
@@ -83,23 +136,22 @@ def procesar_una_foto(img_bytes, media_type, bg_color):
     if cw < 20 or ch < 20:
         x, y, cw, ch = 0, 0, w, h
 
-    cropped = img.crop((x, y, x + cw, y + ch))
+    cropped = img_masked.crop((x, y, x + cw, y + ch))
 
-    # Step 3: Sharpen and enhance
+    # Step 5: Enhance
     cropped = cropped.filter(ImageFilter.UnsharpMask(radius=1.0, percent=110, threshold=3))
     cropped = ImageEnhance.Contrast(cropped).enhance(1.05)
     cropped = ImageEnhance.Brightness(cropped).enhance(1.02)
 
-    # Step 4: Scale to fit OUTPUT canvas
+    # Step 6: Scale to output canvas
     cw2, ch2 = cropped.size
     scale = min(OUTPUT_W / cw2, OUTPUT_H / ch2)
     new_w = int(cw2 * scale)
     new_h = int(ch2 * scale)
     cropped = cropped.resize((new_w, new_h), Image.LANCZOS)
 
-    # Step 5: Paste on solid background centered
-    bg_r, bg_g, bg_b = hex_to_rgb(bg_color)
-    canvas = Image.new("RGB", (OUTPUT_W, OUTPUT_H), (bg_r, bg_g, bg_b))
+    # Step 7: Center on solid background
+    canvas = Image.new("RGB", (OUTPUT_W, OUTPUT_H), bg_rgb)
     paste_x = (OUTPUT_W - new_w) // 2
     paste_y = (OUTPUT_H - new_h) // 2
     canvas.paste(cropped, (paste_x, paste_y))
