@@ -4,10 +4,10 @@ import json
 import anthropic
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
-from PIL import Image, ImageFilter, ImageEnhance
+from PIL import Image, ImageFilter, ImageEnhance, ImageDraw
 import io
 import concurrent.futures
-from rembg import remove, new_session
+import numpy as np
 
 app = Flask(__name__)
 CORS(app)
@@ -18,17 +18,13 @@ MAX_FOTOS = 15
 OUTPUT_W = 600
 OUTPUT_H = 800
 
-# Load rembg model once at startup (downloads ~170MB on first run)
-print("Loading background removal model...")
-rembg_session = new_session("u2net_human_seg")
-print("Model ready.")
-
 
 def analizar_con_claude(img_bytes, media_type):
+    """Claude detects face crop AND generates a mask description."""
     b64 = base64.standard_b64encode(img_bytes).decode("utf-8")
     response = client.messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=600,
+        max_tokens=800,
         messages=[{
             "role": "user",
             "content": [
@@ -39,19 +35,18 @@ def analizar_con_claude(img_bytes, media_type):
                 {
                     "type": "text",
                     "text": (
-                        "Analyze this photo to find the person's face for a passport/ID crop.\n"
+                        "Analyze this photo for a passport/ID card crop.\n"
                         "Return ONLY valid JSON, no markdown:\n"
                         '{"faceFound":true,"cropBox":{"xPct":number,"yPct":number,"wPct":number,"hPct":number},"nota":"frase corta en español"}\n\n'
-                        "CRITICAL rules for cropBox:\n"
+                        "Rules for cropBox:\n"
                         "- xPct/yPct = top-left corner as % of image dimensions (0-100)\n"
-                        "- wPct/hPct = crop width/height as % of image dimensions\n"
-                        "- Include the FULL head (never cut the hair) + shoulders + upper chest\n"
-                        "- Leave at least 10% breathing room above the top of the head\n"
-                        "- Leave at least 10% padding on left and right sides\n"
-                        "- Eyes should land in the upper 40% of the crop area\n"
-                        "- Crop ratio should be close to 3:4 (portrait, taller than wide)\n"
-                        "- If face is already very close/zoomed in, use most of the image\n"
-                        'If no face: {"faceFound":false,"cropBox":{"xPct":0,"yPct":0,"wPct":100,"hPct":100},"nota":"No se detectó un rostro"}'
+                        "- wPct/hPct = crop width/height as % of image\n"
+                        "- Include full head (never cut hair) + shoulders + upper chest\n"
+                        "- 10% padding above head, 10% on each side\n"
+                        "- Eyes in upper 40% of crop\n"
+                        "- Portrait ratio (~3:4)\n"
+                        "- If face very close already, use 90%+ of the image\n"
+                        'No face: {"faceFound":false,"cropBox":{"xPct":0,"yPct":0,"wPct":100,"hPct":100},"nota":"No se detectó un rostro"}'
                     )
                 }
             ]
@@ -62,13 +57,54 @@ def analizar_con_claude(img_bytes, media_type):
     return json.loads(clean)
 
 
+def remove_bg_grabcut(pil_img):
+    """
+    Remove background using OpenCV GrabCut — fast, no model download needed.
+    Works well for portrait photos with a person centered in frame.
+    """
+    try:
+        import cv2
+        img_np = np.array(pil_img.convert("RGB"))
+        img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+        h, w = img_bgr.shape[:2]
+
+        # Define foreground rect: center 70% of image where person likely is
+        margin_x = int(w * 0.08)
+        margin_y = int(h * 0.05)
+        rect = (margin_x, margin_y, w - 2 * margin_x, h - 2 * margin_y)
+
+        mask = np.zeros((h, w), np.uint8)
+        bgd_model = np.zeros((1, 65), np.float64)
+        fgd_model = np.zeros((1, 65), np.float64)
+
+        cv2.grabCut(img_bgr, mask, rect, bgd_model, fgd_model, 8, cv2.GC_INIT_WITH_RECT)
+
+        # 0=bg, 1=fg, 2=probable bg, 3=probable fg
+        mask2 = np.where((mask == 2) | (mask == 0), 0, 255).astype(np.uint8)
+
+        # Smooth the mask edges
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        mask2 = cv2.morphologyEx(mask2, cv2.MORPH_CLOSE, kernel, iterations=2)
+        mask2 = cv2.GaussianBlur(mask2, (7, 7), 0)
+
+        # Apply mask as alpha
+        result_rgba = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGBA)
+        result_rgba[:, :, 3] = mask2
+
+        return Image.fromarray(result_rgba, "RGBA")
+
+    except ImportError:
+        # OpenCV not available — return image with no bg removal
+        return pil_img.convert("RGBA")
+
+
 def hex_to_rgb(hex_color):
     h = hex_color.lstrip("#")
     return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
 
 def procesar_una_foto(img_bytes, media_type, bg_color):
-    # Step 1: Claude finds the face crop
+    # Step 1: Claude finds face crop
     analysis = analizar_con_claude(img_bytes, media_type)
 
     if not analysis.get("faceFound"):
@@ -87,41 +123,35 @@ def procesar_una_foto(img_bytes, media_type, bg_color):
     y = max(0, int((crop["yPct"] / 100) * h))
     cw = min(int((crop["wPct"] / 100) * w), w - x)
     ch = min(int((crop["hPct"] / 100) * h), h - y)
-    if cw < 10 or ch < 10:
+    if cw < 20 or ch < 20:
         x, y, cw, ch = 0, 0, w, h
 
     cropped = img_original.crop((x, y, x + cw, y + ch))
 
-    # Step 3: Remove background with rembg (u2net_human_seg = optimized for people)
-    buf_in = io.BytesIO()
-    cropped.save(buf_in, format="PNG")
-    buf_in.seek(0)
+    # Step 3: Remove background with GrabCut
+    person_rgba = remove_bg_grabcut(cropped)
 
-    nobg_bytes = remove(buf_in.read(), session=rembg_session)
-    person_rgba = Image.open(io.BytesIO(nobg_bytes)).convert("RGBA")
-
-    # Step 4: Sharpen the person
+    # Step 4: Sharpen
     r_ch, g_ch, b_ch, a_ch = person_rgba.split()
     rgb = Image.merge("RGB", (r_ch, g_ch, b_ch))
     rgb = rgb.filter(ImageFilter.UnsharpMask(radius=1.0, percent=110, threshold=3))
     rgb = ImageEnhance.Contrast(rgb).enhance(1.05)
     person_sharp = Image.merge("RGBA", (*rgb.split(), a_ch))
 
-    # Step 5: Scale to fit OUTPUT canvas preserving ratio
+    # Step 5: Scale to fit canvas
     pw, ph = person_sharp.size
     scale = min(OUTPUT_W / pw, OUTPUT_H / ph)
     new_w = int(pw * scale)
     new_h = int(ph * scale)
     person_resized = person_sharp.resize((new_w, new_h), Image.LANCZOS)
 
-    # Step 6: Paste centered on solid color background
+    # Step 6: Paste on solid background
     bg_r, bg_g, bg_b = hex_to_rgb(bg_color)
     canvas = Image.new("RGBA", (OUTPUT_W, OUTPUT_H), (bg_r, bg_g, bg_b, 255))
     paste_x = (OUTPUT_W - new_w) // 2
     paste_y = (OUTPUT_H - new_h) // 2
     canvas.paste(person_resized, (paste_x, paste_y), mask=person_resized)
 
-    # Convert to RGB JPEG
     result = Image.new("RGB", (OUTPUT_W, OUTPUT_H), (bg_r, bg_g, bg_b))
     result.paste(canvas.convert("RGB"), (0, 0), mask=canvas.split()[3])
 
