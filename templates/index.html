@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Foto Carnet</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500&family=DM+Serif+Display&display=swap" rel="stylesheet">
+<style>
+:root {
+  --cream: #F7F4EF;
+  --ink: #1C1C1A;
+  --ink2: #5A5A55;
+  --ink3: #9A9A94;
+  --blue: #2B5FA6;
+  --blue-light: #EAF0FA;
+  --green: #1A6B4A;
+  --green-light: #E6F5EE;
+  --red: #C0392B;
+  --red-light: #FDECEA;
+  --border: rgba(28,28,26,0.12);
+  --radius: 14px;
+  --radius-sm: 8px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { background: var(--cream); }
+body {
+  font-family: 'DM Sans', sans-serif;
+  color: var(--ink);
+  min-height: 100vh;
+  background: var(--cream);
+  padding-bottom: 4rem;
+}
+
+header {
+  text-align: center;
+  padding: 3rem 1rem 2rem;
+}
+header h1 {
+  font-family: 'DM Serif Display', serif;
+  font-size: clamp(28px, 6vw, 44px);
+  font-weight: 400;
+  letter-spacing: -0.5px;
+  color: var(--ink);
+}
+header p {
+  font-size: 15px;
+  color: var(--ink2);
+  margin-top: 8px;
+  line-height: 1.6;
+}
+
+.container { max-width: 760px; margin: 0 auto; padding: 0 1rem; }
+
+.panel {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  margin-bottom: 1rem;
+}
+.panel-label {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--ink3);
+  margin-bottom: 14px;
+}
+
+/* Upload zone */
+.upload-zone {
+  border: 2px dashed rgba(28,28,26,0.18);
+  border-radius: var(--radius-sm);
+  padding: 2.5rem 1rem;
+  text-align: center;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  position: relative;
+}
+.upload-zone:hover, .upload-zone.drag {
+  background: var(--blue-light);
+  border-color: var(--blue);
+}
+.upload-zone input {
+  position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
+}
+.upload-icon {
+  width: 48px; height: 48px;
+  margin: 0 auto 14px;
+  background: var(--cream);
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+}
+.upload-icon svg { opacity: 0.5; }
+.upload-zone h3 { font-size: 16px; font-weight: 500; color: var(--ink); }
+.upload-zone p { font-size: 13px; color: var(--ink3); margin-top: 5px; }
+.max-badge {
+  display: inline-block;
+  background: var(--blue-light);
+  color: var(--blue);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 10px;
+  border-radius: 20px;
+  margin-top: 10px;
+}
+
+/* Color swatches */
+.color-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.swatch {
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: transform 0.12s, border-color 0.12s;
+  flex-shrink: 0;
+}
+.swatch:hover { transform: scale(1.1); }
+.swatch.active { border-color: var(--blue); transform: scale(1.15); }
+.swatch.light { border-color: rgba(28,28,26,0.15); }
+.swatch.light.active { border-color: var(--blue); }
+#colorPicker {
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  cursor: pointer;
+  padding: 0;
+  background: none;
+  flex-shrink: 0;
+}
+.color-hint { font-size: 11px; color: var(--ink3); margin-top: 8px; }
+
+/* Process button */
+.btn-process {
+  width: 100%;
+  padding: 15px;
+  background: var(--ink);
+  color: white;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+.btn-process:hover:not(:disabled) { background: #333; }
+.btn-process:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* Photo grid */
+.fotos-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+  margin-top: 1rem;
+}
+
+.foto-card {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  position: relative;
+}
+
+.foto-card .card-img-wrap {
+  position: relative;
+  aspect-ratio: 4/5;
+  background: var(--cream);
+  overflow: hidden;
+}
+.foto-card .card-img-wrap img {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.foto-card .card-overlay {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 8px;
+  transition: background 0.2s;
+}
+.foto-card .card-overlay.processing {
+  background: rgba(247,244,239,0.88);
+}
+.foto-card .card-overlay.done-ok {
+  background: transparent;
+}
+.foto-card .card-overlay.done-err {
+  background: rgba(192,57,43,0.08);
+}
+
+.spinner {
+  width: 28px; height: 28px;
+  border: 2.5px solid rgba(28,28,26,0.12);
+  border-top-color: var(--ink);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.status-icon {
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px;
+}
+.status-icon.ok { background: var(--green-light); color: var(--green); }
+.status-icon.err { background: var(--red-light); color: var(--red); }
+
+.card-info {
+  padding: 8px 10px;
+}
+.card-name {
+  font-size: 12px;
+  color: var(--ink2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.card-nota {
+  font-size: 11px;
+  color: var(--ink3);
+  margin-top: 2px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.card-nota.err { color: var(--red); }
+
+.btn-dl-card {
+  display: block;
+  width: calc(100% - 20px);
+  margin: 0 10px 10px;
+  padding: 7px;
+  background: var(--green);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: center;
+  transition: background 0.15s;
+}
+.btn-dl-card:hover { background: #134f37; }
+
+.btn-dl-all {
+  width: 100%;
+  padding: 13px;
+  background: var(--green);
+  color: white;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  margin-top: 14px;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  transition: background 0.15s;
+}
+.btn-dl-all:hover { background: #134f37; }
+
+.remove-btn {
+  position: absolute;
+  top: 6px; right: 6px;
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  background: rgba(28,28,26,0.55);
+  color: white;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  display: flex; align-items: center; justify-content: center;
+  line-height: 1;
+  z-index: 10;
+}
+.remove-btn:hover { background: rgba(28,28,26,0.8); }
+
+.counter {
+  font-size: 13px;
+  color: var(--ink2);
+  margin-bottom: 10px;
+}
+.counter span { font-weight: 500; color: var(--ink); }
+
+.global-status {
+  text-align: center;
+  font-size: 14px;
+  color: var(--ink2);
+  padding: 8px;
+  min-height: 30px;
+}
+
+/* Responsive */
+@media (max-width: 480px) {
+  .fotos-grid { grid-template-columns: repeat(2, 1fr); }
+  header { padding: 2rem 1rem 1.5rem; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Foto Carnet</h1>
+  <p>Sube hasta 15 fotos — la IA recorta, mejora<br>y aplica el fondo de tu elección automáticamente</p>
+</header>
+
+<div class="container">
+
+  <div class="panel">
+    <div class="panel-label">Fotos a procesar</div>
+    <div class="upload-zone" id="dropZone">
+      <input type="file" id="fileInput" accept="image/*" multiple />
+      <div class="upload-icon">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+          <rect x="2" y="5" width="20" height="15" rx="2" stroke="currentColor" stroke-width="1.5"/>
+          <circle cx="12" cy="12.5" r="3.5" stroke="currentColor" stroke-width="1.5"/>
+          <circle cx="17.5" cy="7.5" r="1.2" fill="currentColor"/>
+        </svg>
+      </div>
+      <h3>Toca aquí para elegir fotos</h3>
+      <p>O arrastra las fotos a este recuadro</p>
+      <span class="max-badge">Máximo 15 fotos a la vez</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-label">Color del fondo</div>
+    <div class="color-row">
+      <div class="swatch light active" data-color="#FFFFFF" style="background:#FFFFFF" title="Blanco"></div>
+      <div class="swatch light" data-color="#CCDDE8" style="background:#CCDDE8" title="Azul pasaporte"></div>
+      <div class="swatch light" data-color="#E8E8E8" style="background:#E8E8E8" title="Gris claro"></div>
+      <div class="swatch light" data-color="#F5F0E8" style="background:#F5F0E8" title="Crema"></div>
+      <div class="swatch" data-color="#C5D5C0" style="background:#C5D5C0" title="Verde suave"></div>
+      <div class="swatch" data-color="#1A3A5C" style="background:#1A3A5C" title="Azul oscuro"></div>
+      <input type="color" id="colorPicker" value="#FFFFFF" title="Elegir otro color" />
+    </div>
+    <p class="color-hint">El último círculo permite elegir cualquier color personalizado</p>
+  </div>
+
+  <button class="btn-process" id="processBtn" disabled>
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+      <path d="M8 1v4M8 11v4M1 8h4M11 8h4" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+      <circle cx="8" cy="8" r="3" stroke="white" stroke-width="1.5"/>
+    </svg>
+    Procesar fotos
+  </button>
+
+  <div class="global-status" id="globalStatus"></div>
+
+  <div id="fotosWrap" style="display:none">
+    <div class="counter" id="counter"></div>
+    <div class="fotos-grid" id="fotosGrid"></div>
+    <button class="btn-dl-all" id="dlAllBtn" style="display:none">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+        <path d="M8 2v8M5 7l3 3 3-3" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M2 12h12" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      Descargar todas las fotos
+    </button>
+  </div>
+
+</div>
+
+<script>
+let archivos = [];
+let bgColor = '#FFFFFF';
+let resultados = {};
+
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+const processBtn = document.getElementById('processBtn');
+const fotosGrid = document.getElementById('fotosGrid');
+const fotosWrap = document.getElementById('fotosWrap');
+const globalStatus = document.getElementById('globalStatus');
+const dlAllBtn = document.getElementById('dlAllBtn');
+const counter = document.getElementById('counter');
+
+// Drag & drop
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('drag');
+  agregarArchivos(Array.from(e.dataTransfer.files));
+});
+fileInput.addEventListener('change', e => agregarArchivos(Array.from(e.target.files)));
+
+function agregarArchivos(nuevos) {
+  const imgs = nuevos.filter(f => f.type.startsWith('image/'));
+  const disponible = 15 - archivos.length;
+  const agregar = imgs.slice(0, disponible);
+  archivos = [...archivos, ...agregar];
+  if (imgs.length > disponible) {
+    globalStatus.textContent = `Solo se agregaron ${agregar.length} foto(s). Límite: 15.`;
+  } else {
+    globalStatus.textContent = '';
+  }
+  renderGrid();
+  fileInput.value = '';
+}
+
+function removerArchivo(idx) {
+  archivos.splice(idx, 1);
+  renderGrid();
+}
+
+function renderGrid() {
+  processBtn.disabled = archivos.length === 0;
+  dlAllBtn.style.display = 'none';
+  resultados = {};
+
+  if (archivos.length === 0) {
+    fotosWrap.style.display = 'none';
+    counter.textContent = '';
+    return;
+  }
+
+  fotosWrap.style.display = 'block';
+  counter.innerHTML = `<span>${archivos.length}</span> foto${archivos.length > 1 ? 's' : ''} seleccionada${archivos.length > 1 ? 's' : ''}`;
+  fotosGrid.innerHTML = '';
+
+  archivos.forEach((file, idx) => {
+    const url = URL.createObjectURL(file);
+    const card = document.createElement('div');
+    card.className = 'foto-card';
+    card.id = `card-${idx}`;
+    card.innerHTML = `
+      <div class="card-img-wrap">
+        <img src="${url}" alt="${file.name}" />
+        <div class="card-overlay" id="overlay-${idx}"></div>
+      </div>
+      <button class="remove-btn" onclick="removerArchivo(${idx})">✕</button>
+      <div class="card-info">
+        <div class="card-name">${file.name}</div>
+        <div class="card-nota" id="nota-${idx}">Lista para procesar</div>
+      </div>`;
+    fotosGrid.appendChild(card);
+  });
+}
+
+// Colors
+document.querySelectorAll('.swatch').forEach(sw => {
+  sw.addEventListener('click', () => {
+    document.querySelectorAll('.swatch').forEach(s => s.classList.remove('active'));
+    sw.classList.add('active');
+    bgColor = sw.dataset.color;
+    document.getElementById('colorPicker').value = bgColor;
+  });
+});
+document.getElementById('colorPicker').addEventListener('input', e => {
+  bgColor = e.target.value;
+  document.querySelectorAll('.swatch').forEach(s => s.classList.remove('active'));
+});
+
+// Process
+processBtn.addEventListener('click', async () => {
+  if (archivos.length === 0) return;
+  processBtn.disabled = true;
+  dlAllBtn.style.display = 'none';
+  resultados = {};
+
+  // Remove buttons and set all to "processing"
+  document.querySelectorAll('.remove-btn').forEach(b => b.style.display = 'none');
+  archivos.forEach((_, idx) => {
+    const overlay = document.getElementById(`overlay-${idx}`);
+    overlay.className = 'card-overlay processing';
+    overlay.innerHTML = '<div class="spinner"></div>';
+    document.getElementById(`nota-${idx}`).textContent = 'Analizando...';
+    document.getElementById(`nota-${idx}`).className = 'card-nota';
+  });
+
+  globalStatus.textContent = 'Procesando fotos en paralelo...';
+
+  const formData = new FormData();
+  archivos.forEach(f => formData.append('fotos', f));
+  formData.append('fondo', bgColor);
+  formData.append('tamano', '800');
+
+  let respData;
+  try {
+    const resp = await fetch('/procesar', { method: 'POST', body: formData });
+    respData = await resp.json();
+  } catch (e) {
+    globalStatus.textContent = 'Error de conexión: ' + e.message;
+    processBtn.disabled = false;
+    return;
+  }
+
+  const res = respData.resultados || {};
+  let okCount = 0;
+
+  archivos.forEach((file, idx) => {
+    const r = res[file.name];
+    const overlay = document.getElementById(`overlay-${idx}`);
+    const nota = document.getElementById(`nota-${idx}`);
+    const card = document.getElementById(`card-${idx}`);
+
+    if (!r) {
+      overlay.className = 'card-overlay done-err';
+      overlay.innerHTML = '<div class="status-icon err">✕</div>';
+      nota.textContent = 'Error al procesar';
+      nota.className = 'card-nota err';
+      return;
+    }
+
+    if (!r.ok) {
+      overlay.className = 'card-overlay done-err';
+      overlay.innerHTML = '<div class="status-icon err">✕</div>';
+      nota.textContent = r.error || 'Error';
+      nota.className = 'card-nota err';
+      return;
+    }
+
+    // Success
+    okCount++;
+    resultados[file.name] = r.imagen;
+
+    const imgWrap = card.querySelector('.card-img-wrap img');
+    imgWrap.src = 'data:image/jpeg;base64,' + r.imagen;
+    imgWrap.style.objectFit = 'contain';
+
+    overlay.className = 'card-overlay done-ok';
+    overlay.innerHTML = '<div class="status-icon ok">✓</div>';
+    setTimeout(() => { overlay.innerHTML = ''; }, 1800);
+
+    nota.textContent = r.nota || 'Procesada';
+    nota.className = 'card-nota';
+
+    // Download button per card
+    const dlCard = document.createElement('button');
+    dlCard.className = 'btn-dl-card';
+    dlCard.textContent = 'Descargar';
+    dlCard.onclick = () => descargarUna(file.name, r.imagen);
+    card.appendChild(dlCard);
+  });
+
+  const total = archivos.length;
+  const fallidas = total - okCount;
+  if (fallidas === 0) {
+    globalStatus.textContent = `✓ ${okCount} foto${okCount > 1 ? 's' : ''} procesada${okCount > 1 ? 's' : ''} correctamente`;
+  } else {
+    globalStatus.textContent = `${okCount} procesada${okCount !== 1 ? 's' : ''} · ${fallidas} con error`;
+  }
+
+  if (okCount > 1) dlAllBtn.style.display = 'flex';
+  processBtn.disabled = false;
+});
+
+function descargarUna(nombre, b64) {
+  const a = document.createElement('a');
+  const base = nombre.replace(/\.[^.]+$/, '');
+  a.href = 'data:image/jpeg;base64,' + b64;
+  a.download = base + '-carnet.jpg';
+  a.click();
+}
+
+dlAllBtn.addEventListener('click', () => {
+  Object.entries(resultados).forEach(([nombre, b64], i) => {
+    setTimeout(() => descargarUna(nombre, b64), i * 300);
+  });
+});
+</script>
+</body>
+</html>
