@@ -3,3 +3,5 @@ flask-cors==5.0.1
 anthropic==0.50.0
 Pillow==11.2.1
 gunicorn==23.0.0
+rembg[gpu]==2.0.59
+onnxruntime==1.19.2
