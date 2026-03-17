@@ -4,10 +4,9 @@ import json
 import anthropic
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
-from PIL import Image, ImageFilter, ImageEnhance, ImageDraw
+from PIL import Image, ImageFilter, ImageEnhance
 import io
 import concurrent.futures
-import numpy as np
 
 app = Flask(__name__)
 CORS(app)
@@ -20,11 +19,10 @@ OUTPUT_H = 800
 
 
 def analizar_con_claude(img_bytes, media_type):
-    """Claude detects face crop AND generates a mask description."""
     b64 = base64.standard_b64encode(img_bytes).decode("utf-8")
     response = client.messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=800,
+        max_tokens=600,
         messages=[{
             "role": "user",
             "content": [
@@ -35,10 +33,10 @@ def analizar_con_claude(img_bytes, media_type):
                 {
                     "type": "text",
                     "text": (
-                        "Analyze this photo for a passport/ID card crop.\n"
+                        "Analyze this photo for a passport/ID crop.\n"
                         "Return ONLY valid JSON, no markdown:\n"
                         '{"faceFound":true,"cropBox":{"xPct":number,"yPct":number,"wPct":number,"hPct":number},"nota":"frase corta en español"}\n\n'
-                        "Rules for cropBox:\n"
+                        "Rules:\n"
                         "- xPct/yPct = top-left corner as % of image dimensions (0-100)\n"
                         "- wPct/hPct = crop width/height as % of image\n"
                         "- Include full head (never cut hair) + shoulders + upper chest\n"
@@ -55,47 +53,6 @@ def analizar_con_claude(img_bytes, media_type):
     text = "".join(b.text for b in response.content if b.type == "text")
     clean = text.replace("```json", "").replace("```", "").strip()
     return json.loads(clean)
-
-
-def remove_bg_grabcut(pil_img):
-    """
-    Remove background using OpenCV GrabCut — fast, no model download needed.
-    Works well for portrait photos with a person centered in frame.
-    """
-    try:
-        import cv2
-        img_np = np.array(pil_img.convert("RGB"))
-        img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-        h, w = img_bgr.shape[:2]
-
-        # Define foreground rect: center 70% of image where person likely is
-        margin_x = int(w * 0.08)
-        margin_y = int(h * 0.05)
-        rect = (margin_x, margin_y, w - 2 * margin_x, h - 2 * margin_y)
-
-        mask = np.zeros((h, w), np.uint8)
-        bgd_model = np.zeros((1, 65), np.float64)
-        fgd_model = np.zeros((1, 65), np.float64)
-
-        cv2.grabCut(img_bgr, mask, rect, bgd_model, fgd_model, 8, cv2.GC_INIT_WITH_RECT)
-
-        # 0=bg, 1=fg, 2=probable bg, 3=probable fg
-        mask2 = np.where((mask == 2) | (mask == 0), 0, 255).astype(np.uint8)
-
-        # Smooth the mask edges
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        mask2 = cv2.morphologyEx(mask2, cv2.MORPH_CLOSE, kernel, iterations=2)
-        mask2 = cv2.GaussianBlur(mask2, (7, 7), 0)
-
-        # Apply mask as alpha
-        result_rgba = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGBA)
-        result_rgba[:, :, 3] = mask2
-
-        return Image.fromarray(result_rgba, "RGBA")
-
-    except ImportError:
-        # OpenCV not available — return image with no bg removal
-        return pil_img.convert("RGBA")
 
 
 def hex_to_rgb(hex_color):
@@ -116,8 +73,8 @@ def procesar_una_foto(img_bytes, media_type, bg_color):
 
     # Step 2: Crop to head + shoulders
     crop = analysis["cropBox"]
-    img_original = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    w, h = img_original.size
+    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    w, h = img.size
 
     x = max(0, int((crop["xPct"] / 100) * w))
     y = max(0, int((crop["yPct"] / 100) * h))
@@ -126,37 +83,29 @@ def procesar_una_foto(img_bytes, media_type, bg_color):
     if cw < 20 or ch < 20:
         x, y, cw, ch = 0, 0, w, h
 
-    cropped = img_original.crop((x, y, x + cw, y + ch))
+    cropped = img.crop((x, y, x + cw, y + ch))
 
-    # Step 3: Remove background with GrabCut
-    person_rgba = remove_bg_grabcut(cropped)
+    # Step 3: Sharpen and enhance
+    cropped = cropped.filter(ImageFilter.UnsharpMask(radius=1.0, percent=110, threshold=3))
+    cropped = ImageEnhance.Contrast(cropped).enhance(1.05)
+    cropped = ImageEnhance.Brightness(cropped).enhance(1.02)
 
-    # Step 4: Sharpen
-    r_ch, g_ch, b_ch, a_ch = person_rgba.split()
-    rgb = Image.merge("RGB", (r_ch, g_ch, b_ch))
-    rgb = rgb.filter(ImageFilter.UnsharpMask(radius=1.0, percent=110, threshold=3))
-    rgb = ImageEnhance.Contrast(rgb).enhance(1.05)
-    person_sharp = Image.merge("RGBA", (*rgb.split(), a_ch))
+    # Step 4: Scale to fit OUTPUT canvas
+    cw2, ch2 = cropped.size
+    scale = min(OUTPUT_W / cw2, OUTPUT_H / ch2)
+    new_w = int(cw2 * scale)
+    new_h = int(ch2 * scale)
+    cropped = cropped.resize((new_w, new_h), Image.LANCZOS)
 
-    # Step 5: Scale to fit canvas
-    pw, ph = person_sharp.size
-    scale = min(OUTPUT_W / pw, OUTPUT_H / ph)
-    new_w = int(pw * scale)
-    new_h = int(ph * scale)
-    person_resized = person_sharp.resize((new_w, new_h), Image.LANCZOS)
-
-    # Step 6: Paste on solid background
+    # Step 5: Paste on solid background centered
     bg_r, bg_g, bg_b = hex_to_rgb(bg_color)
-    canvas = Image.new("RGBA", (OUTPUT_W, OUTPUT_H), (bg_r, bg_g, bg_b, 255))
+    canvas = Image.new("RGB", (OUTPUT_W, OUTPUT_H), (bg_r, bg_g, bg_b))
     paste_x = (OUTPUT_W - new_w) // 2
     paste_y = (OUTPUT_H - new_h) // 2
-    canvas.paste(person_resized, (paste_x, paste_y), mask=person_resized)
-
-    result = Image.new("RGB", (OUTPUT_W, OUTPUT_H), (bg_r, bg_g, bg_b))
-    result.paste(canvas.convert("RGB"), (0, 0), mask=canvas.split()[3])
+    canvas.paste(cropped, (paste_x, paste_y))
 
     buf_out = io.BytesIO()
-    result.save(buf_out, format="JPEG", quality=95)
+    canvas.save(buf_out, format="JPEG", quality=95)
     buf_out.seek(0)
     resultado_b64 = base64.standard_b64encode(buf_out.read()).decode("utf-8")
 
@@ -201,7 +150,7 @@ def procesar():
         except Exception as e:
             return nombre, {"ok": False, "error": str(e), "nombre": nombre}
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         futures = {executor.submit(procesar_tarea, t): t[0] for t in tareas}
         for future in concurrent.futures.as_completed(futures):
             nombre, res = future.result()
