@@ -3,5 +3,3 @@ flask-cors
 anthropic
 Pillow
 gunicorn
-opencv-python-headless
-numpy
